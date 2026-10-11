@@ -1,0 +1,62 @@
+name: Bitbison
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  ghostty:
+    name: ghostty (linux x86_64, ReleaseFast)
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    env:
+      ZIG_GLOBAL_CACHE_DIR: /home/runner/.cache/zig
+    steps:
+      - uses: bitbison-labs/github@e4ef48414f0cf13bd38187afe37669f3853b4ff9
+        with:
+          channel: ${{ secrets.BITBISON_CHANNEL }}
+          token: ${{ secrets.BITBISON_TOKEN }}
+          instance: ${{ secrets.BITBISON_INSTANCE }}
+
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get -qq update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get -qq -y --no-install-recommends install \
+            blueprint-compiler \
+            gettext \
+            libadwaita-1-dev \
+            libbz2-dev \
+            libgtk-4-dev \
+            libgtk4-layer-shell-dev \
+            libonig-dev \
+            libxml2-utils \
+            pandoc
+
+      # The version build.zig.zon asks for, checked against ziglang.org's index.
+      - name: Install Zig
+        run: |
+          version=$(sed -n -E 's/^\s*\.?minimum_zig_version\s*=\s*"([^"]+)".*/\1/p' build.zig.zon)
+          curl -fsSL -o "$RUNNER_TEMP/zig-index.json" https://ziglang.org/download/index.json
+          url=$(jq -er --arg v "$version" '.[$v]["x86_64-linux"].tarball' "$RUNNER_TEMP/zig-index.json")
+          sum=$(jq -er --arg v "$version" '.[$v]["x86_64-linux"].shasum' "$RUNNER_TEMP/zig-index.json")
+          curl -fsSL -o "$RUNNER_TEMP/zig.tar.xz" "$url"
+          echo "$sum  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-$version" >> "$GITHUB_PATH"
+
+      # The packaging path from PACKAGING.md: `zig fetch` of every URL in
+      # build.zig.zon.txt, so the build after it fetches nothing.
+      - name: Fetch dependencies
+        run: ./nix/build-support/fetch-zig-cache.sh
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dcpu=baseline
+
+      - name: Smoke test
+        run: ./zig-out/bin/ghostty +version
